@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Model weights (large, fetched separately -- see docs/setup.md)
+models/*
+!models/.gitkeep
+
+# Captured media / local test fixtures
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.h264
+!docs/**/*.png
+!docs/**/*.jpg
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# opencode agent state (not part of this project)
+.opencode/

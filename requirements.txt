@@ -1,0 +1,10 @@
+# For developing/testing off the Pi (geometry, shading, segmenters, server)
+# using --source image:... or video:... . picamera2 is intentionally not
+# listed here -- it's a Raspberry Pi OS apt package (python3-picamera2) and
+# isn't installable via pip off-device. See docs/setup.md for the on-Pi
+# environment, which uses a venv with --system-site-packages instead of this
+# file.
+opencv-python>=4.10
+numpy>=2.0
+pyyaml>=6.0
+onnxruntime>=1.20

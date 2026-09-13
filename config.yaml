@@ -1,0 +1,54 @@
+# greenpro pipeline configuration.
+#
+# Every value here has a matching field in greenpro/config.py with the same
+# default -- this file only needs to list what you're overriding, but it's
+# written out in full so it doubles as documentation of every tunable.
+#
+# Anything here can also be changed live, without restarting, via:
+#   curl -X POST http://<host>:8000/config -d '{"geometry": {"rotation": 180}}'
+
+capture:
+  source: picam            # "picam" | "image:<path>" | "video:<path>"
+  main_size: [648, 486]    # preview + neural-segmenter input resolution
+  lores_size: [324, 242]   # motion-segmenter / downscale-source resolution
+  fps: 20                  # hard-capped to 30 regardless of this value (see
+                            # greenpro/config.py MAX_DISPLAY_FPS and the
+                            # pipeline's independent frame pacer)
+
+geometry:
+  rotation: 90              # 0 | 90 | 180 | 270 -- camera mounted sideways
+  hflip: false
+  vflip: false
+  fit: crop                 # "crop" | "squash" | "pad"
+  crop_anchor: center       # "center" | "start" | "end"
+  zoom: 1.0
+
+shading:
+  fg_color: [255, 255, 255] # human figure
+  bg_color: [0, 0, 0]       # background
+  shading: linear           # "linear" | "threshold" | "gamma"
+  gamma: 1.0
+  levels: 0                 # 0 = smooth, else quantize to N discrete steps
+  min_coverage: 0.0         # coverage below this -> forced to 0 (denoise)
+  threshold: 0.5            # used when shading == "threshold"
+
+segmenter:
+  kind: motion              # "motion" | "neural" | "combo"
+  combine: max               # combo only: "max" | "min" | "mean" | "motion_gated"
+  motion:
+    history: 300
+    var_threshold: 16.0
+    learning_rate: -1.0      # -1 = let OpenCV choose automatically
+    open_kernel: 3
+    close_kernel: 7
+    min_blob_area: 40
+  neural:
+    model_path: models/selfie_segmentation.onnx
+    input_size: [256, 256]
+    threshold: 0.5
+    num_threads: 4
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  jpeg_quality: 70
