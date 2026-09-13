@@ -20,7 +20,8 @@ silhouette on that array, live:
    straddling the edge of a silhouette gets a proportionate blend between the
    two colors rather than a hard, aliased edge.
 4. **Send** — the resulting 17×9×3 frame goes out to Will's Green Building
-   display simulator/server.
+   display simulator/server (see [docs/simulator.md](docs/simulator.md) for
+   its wire protocol).
 
 This repo covers steps 1–3 in full, plus a local preview server so you can
 watch the raw feed, the two-color mask, and the final 17×9 grid side by side
@@ -50,7 +51,8 @@ greenpro/
     segmenters.py      motion, neural, and combined human-figure segmenters
     pipeline.py        background worker thread tying the above together
     server.py          local HTTP preview (MJPEG streams + /frame.json + live config)
-  docs/               current project state, setup notes, the frame protocol
+  docs/               current project state, setup notes, the frame protocol,
+                       and what's known about Will's simulator/server
 ```
 
 ## Quick start
