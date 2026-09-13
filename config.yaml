@@ -52,3 +52,13 @@ server:
   host: 0.0.0.0
   port: 8000
   jpeg_quality: 70
+
+sink:
+  enabled: false            # off by default -- set true (or --send) once
+                            # `instance` names a real simulator instance
+  base_url: https://sundai.willsarg.com/api
+  instance: ""              # e.g. "hazel-toad" -- see docs/simulator.md
+  fps: 15                   # hard-capped to 30 regardless of this value,
+                            # same MAX_DISPLAY_FPS as capture.fps
+  timeout: 2.0               # seconds, per-request
+  retry_backoff: 1.0         # seconds, doubles on repeated failures up to 10s
