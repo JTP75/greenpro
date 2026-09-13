@@ -116,19 +116,71 @@ class NeuralConfig:
 
 
 @dataclass
-class SegmenterConfig:
-    kind: str = "motion"        # "motion" | "neural" | "combo"
-    combine: str = "max"        # "max" | "min" | "mean" | "motion_gated"
-    motion: MotionConfig = field(default_factory=MotionConfig)
-    neural: NeuralConfig = field(default_factory=NeuralConfig)
+class TopDownConfig:
+    # Cap on how many detected people get a full PP-HumanSeg pass; anyone
+    # beyond this (largest boxes served first) falls back to a soft ellipse
+    # fill so a crowd degrades gracefully instead of stalling the pipeline.
+    # See docs/models.md for the measured per-person cost this trades off.
+    max_crops: int = 2
+    # Fractional padding added around each detected box before cropping for
+    # segmentation, so the crop isn't tight against the person's silhouette.
+    crop_padding: float = 0.15
+    # PP-HumanSeg is trained on webcam/teleconferencing footage (chest-up
+    # framing) -- confirmed live: even given a correct full-body detector
+    # box, it under-segments legs, cutting the mask off around the torso.
+    # floor_fill blends in a low-confidence soft ellipse spanning the FULL
+    # detector box underneath PP-HumanSeg's own mask (via max()), so where
+    # PP-HumanSeg is confident (torso/arms/head) that detail wins, and where
+    # it isn't (typically legs) the person doesn't just vanish -- they show
+    # dimmer instead. 0 disables this and uses PP-HumanSeg's mask as-is.
+    floor_fill: float = 0.35
 
     def clamp(self) -> None:
-        if self.kind not in ("motion", "neural", "combo"):
+        self.max_crops = max(1, int(self.max_crops))
+        self.crop_padding = _clamp(float(self.crop_padding), 0.0, 1.0)
+        self.floor_fill = _clamp(float(self.floor_fill), 0.0, 1.0)
+
+
+@dataclass
+class SmoothingConfig:
+    # EMA smoothing over the 17x9 coverage grid, applied before shading.
+    # At 153 pixels a single flickering cell is 1/153rd of the whole image,
+    # so smoothing the coverage the neural backends produce is worth more
+    # than it would be on a normal-resolution display. alpha is the weight
+    # given to the *new* frame each update (1.0 = no smoothing).
+    alpha: float = 0.6
+
+    def clamp(self) -> None:
+        self.alpha = _clamp(float(self.alpha), 0.01, 1.0)
+
+
+@dataclass
+class SegmenterConfig:
+    kind: str = "topdown"        # "motion" | "neural" | "boxfill" | "topdown" | "combo"
+    combine: str = "max"         # "max" | "min" | "mean" | "motion_gated" (combo only)
+    # "nanodet" (default): true full-body COCO boxes, head-to-feet.
+    # "mediapipe": faster (measured ~2x, docs/models.md) but its raw box is
+    #   NOT a full-body box -- it's an SSD anchor-scale detection box
+    #   centered near the face, meant to feed MediaPipe's own separate ROI
+    #   calculation from 4 auxiliary landmarks (which detectors.py does not
+    #   implement). Confirmed live: it tracked as a square centered on the
+    #   face/head, cutting off the body below the chest. Don't default to
+    #   this without implementing that ROI step.
+    detector_kind: str = "nanodet"
+    motion: MotionConfig = field(default_factory=MotionConfig)
+    neural: NeuralConfig = field(default_factory=NeuralConfig)
+    topdown: TopDownConfig = field(default_factory=TopDownConfig)
+
+    def clamp(self) -> None:
+        if self.kind not in ("motion", "neural", "boxfill", "topdown", "combo"):
             self.kind = "motion"
         if self.combine not in ("max", "min", "mean", "motion_gated"):
             self.combine = "max"
+        if self.detector_kind not in ("mediapipe", "nanodet"):
+            self.detector_kind = "mediapipe"
         self.motion.clamp()
         self.neural.clamp()
+        self.topdown.clamp()
 
 
 @dataclass
@@ -147,6 +199,7 @@ class Config:
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     shading: ShadingConfig = field(default_factory=ShadingConfig)
     segmenter: SegmenterConfig = field(default_factory=SegmenterConfig)
+    smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
 
     def clamp(self) -> None:
@@ -154,6 +207,7 @@ class Config:
         self.geometry.clamp()
         self.shading.clamp()
         self.segmenter.clamp()
+        self.smoothing.clamp()
         self.server.clamp()
 
     def to_dict(self) -> dict:

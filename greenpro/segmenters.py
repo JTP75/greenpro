@@ -15,7 +15,9 @@ import logging
 import cv2
 import numpy as np
 
-from .config import MotionConfig, NeuralConfig, SegmenterConfig
+from .config import MotionConfig, NeuralConfig, SegmenterConfig, TopDownConfig
+from .detectors import Box, PersonDetector, build_detector
+from .vendor_loader import load_module, model_weights_path
 
 log = logging.getLogger(__name__)
 
@@ -146,6 +148,125 @@ class NeuralSegmenter(Segmenter):
         return prob
 
 
+def _draw_soft_ellipse(mask: np.ndarray, box: Box, amplitude: float = 1.0) -> None:
+    """Fills box with a soft (anti-aliased, vertically stretched) ellipse
+    rather than a hard rectangle. A rectangle's corners survive the 17x9
+    area-average as visible squared-off blocks; an ellipse reads as a person
+    once downscaled. Drawn in two passes (filled + one blurred edge) for a
+    soft boundary rather than a binary one, matching the coverage semantics
+    every other Segmenter returns. `amplitude` < 1.0 draws a dimmer "guess"
+    layer -- see TopDownConfig.floor_fill."""
+    cx, cy = box.x + box.w / 2, box.y + box.h / 2
+    axes = (max(1, int(box.w * 0.42)), max(1, int(box.h * 0.48)))
+    layer = np.zeros_like(mask)
+    cv2.ellipse(layer, (int(cx), int(cy)), axes, 0, 0, 360, amplitude, thickness=-1)
+    blur_k = max(3, (min(axes) // 4) | 1)  # odd kernel, scaled to box size
+    layer = cv2.GaussianBlur(layer, (blur_k, blur_k), 0)
+    np.maximum(mask, layer, out=mask)
+
+
+class BoxFillSegmenter(Segmenter):
+    """Detector only, no segmentation model -- each detected person becomes a
+    soft-edged filled ellipse. This is the fast path: about as fast as the
+    detector alone (~20fps measured for MediaPipe on Pi 5, see
+    docs/models.md), and at 9x17 output resolution a filled silhouette shape
+    is nearly indistinguishable from a traced one. Good default if
+    TopDownSegmenter's extra per-person segmentation pass is too slow for a
+    given scene (many people at once).
+    """
+
+    def __init__(self, detector_kind: str = "mediapipe"):
+        self._detector: PersonDetector = build_detector(detector_kind)
+
+    def process(self, gray: np.ndarray, rgb: np.ndarray | None) -> np.ndarray:
+        h, w = gray.shape[:2]
+        mask = np.zeros((h, w), dtype=np.float32)
+        if rgb is None:
+            return mask
+        scale_x, scale_y = w / rgb.shape[1], h / rgb.shape[0]
+        for box in self._detector.detect(rgb):
+            scaled = Box(
+                int(box.x * scale_x), int(box.y * scale_y),
+                int(box.w * scale_x), int(box.h * scale_y), box.score,
+            ).clipped(w, h)
+            if scaled.w > 0 and scaled.h > 0:
+                _draw_soft_ellipse(mask, scaled)
+        return mask
+
+
+class TopDownSegmenter(Segmenter):
+    """The room-scale answer to a portrait-trained segmentation model: run a
+    full-body person detector over the whole frame (any distance), then run
+    PP-HumanSeg on each detected person's *cropped* box. A tight per-person
+    crop resized to PP-HumanSeg's 192x192 input is exactly the close-up
+    framing it was trained on -- see docs/models.md for why this combination
+    was chosen over every single-model alternative that was tried.
+
+    Detected boxes are capped at `max_crops` (largest-area first) to bound
+    worst-case cost in a crowd; any boxes beyond that fall back to the same
+    soft-ellipse fill BoxFillSegmenter uses, so a crowd degrades gracefully
+    instead of the frame rate collapsing.
+    """
+
+    def __init__(self, cfg: TopDownConfig, detector_kind: str = "mediapipe"):
+        self._cfg = cfg
+        self._detector: PersonDetector = build_detector(detector_kind)
+        pphumanseg_mod = load_module("human_segmentation_pphumanseg/pphumanseg.py")
+        # int8bq fails to load under this OpenCV build's ONNX importer
+        # (DequantizeLinear parse error -- see docs/models.md); float32
+        # measured at ~30fps on a single crop on Pi 5, plenty fast.
+        weights = model_weights_path(
+            "human_segmentation_pphumanseg/human_segmentation_pphumanseg_2023mar.onnx"
+        )
+        self._segmenter = pphumanseg_mod.PPHumanSeg(modelPath=weights)
+
+    def process(self, gray: np.ndarray, rgb: np.ndarray | None) -> np.ndarray:
+        h, w = gray.shape[:2]
+        mask = np.zeros((h, w), dtype=np.float32)
+        if rgb is None:
+            return mask
+
+        rgb_h, rgb_w = rgb.shape[:2]
+        scale_x, scale_y = w / rgb_w, h / rgb_h
+        pad = self._cfg.crop_padding
+
+        boxes = sorted(self._detector.detect(rgb), key=lambda b: b.area(), reverse=True)
+        segmented, overflow = boxes[: self._cfg.max_crops], boxes[self._cfg.max_crops :]
+
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        for box in segmented:
+            pad_w, pad_h = int(box.w * pad), int(box.h * pad)
+            padded = Box(
+                box.x - pad_w, box.y - pad_h, box.w + 2 * pad_w, box.h + 2 * pad_h, box.score
+            ).clipped(rgb_w, rgb_h)
+            if padded.w <= 0 or padded.h <= 0:
+                continue
+            crop = bgr[padded.y : padded.y + padded.h, padded.x : padded.x + padded.w]
+            person_mask = self._segmenter.infer(crop)[0].astype(np.float32)  # (h, w) in {0,1}
+
+            scaled_box = Box(
+                int(padded.x * scale_x), int(padded.y * scale_y),
+                int(padded.w * scale_x), int(padded.h * scale_y), box.score,
+            ).clipped(w, h)
+            if scaled_box.w <= 0 or scaled_box.h <= 0:
+                continue
+            resized = cv2.resize(
+                person_mask, (scaled_box.w, scaled_box.h), interpolation=cv2.INTER_LINEAR
+            )
+            region = mask[scaled_box.y : scaled_box.y + scaled_box.h, scaled_box.x : scaled_box.x + scaled_box.w]
+            np.maximum(region, resized, out=region)
+
+        for box in overflow:
+            scaled = Box(
+                int(box.x * scale_x), int(box.y * scale_y),
+                int(box.w * scale_x), int(box.h * scale_y), box.score,
+            ).clipped(w, h)
+            if scaled.w > 0 and scaled.h > 0:
+                _draw_soft_ellipse(mask, scaled)
+
+        return mask
+
+
 class ComboSegmenter(Segmenter):
     """Runs motion and neural segmenters together. `combine` controls how
     their outputs merge:
@@ -194,6 +315,22 @@ def build_segmenter(cfg: SegmenterConfig) -> Segmenter:
         except Exception:
             log.warning(
                 "neural segmenter failed to load; falling back to motion", exc_info=True
+            )
+            return MotionSegmenter(cfg.motion)
+    if cfg.kind == "boxfill":
+        try:
+            return BoxFillSegmenter(cfg.detector_kind)
+        except Exception:
+            log.warning(
+                "boxfill segmenter failed to load; falling back to motion", exc_info=True
+            )
+            return MotionSegmenter(cfg.motion)
+    if cfg.kind == "topdown":
+        try:
+            return TopDownSegmenter(cfg.topdown, cfg.detector_kind)
+        except Exception:
+            log.warning(
+                "topdown segmenter failed to load; falling back to motion", exc_info=True
             )
             return MotionSegmenter(cfg.motion)
     if cfg.kind == "combo":

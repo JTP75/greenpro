@@ -76,6 +76,7 @@ def _frame_to_dict(frame: LatestFrame) -> dict:
         "rgb": flat,
         "frame_no": frame.frame_no,
         "fps": round(frame.timings.fps, 2),
+        "inference_fps": round(frame.timings.inference_fps, 2),
     }
 
 
@@ -102,7 +103,7 @@ INDEX_HTML = """<!doctype html>
         const r = await fetch('/frame.json');
         const d = await r.json();
         document.getElementById('stats').textContent =
-          `frame ${{d.frame_no}}  fps=${{d.fps}}`;
+          `frame ${{d.frame_no}}  display_fps=${{d.fps}}  inference_fps=${{d.inference_fps}}`;
       }} catch (e) {{}}
       setTimeout(poll, 1000);
     }}

@@ -33,8 +33,27 @@ shading:
   threshold: 0.5            # used when shading == "threshold"
 
 segmenter:
-  kind: motion              # "motion" | "neural" | "combo"
-  combine: max               # combo only: "max" | "min" | "mean" | "motion_gated"
+  # "motion"  -- MOG2 background subtraction. No model needed, but loses
+  #              anyone who stops moving within seconds. Kept as a
+  #              no-dependencies fallback and for A/B comparison.
+  # "neural"  -- generic onnxruntime selfie-segmentation model (needs a
+  #              model file at segmenter.neural.model_path -- not vendored,
+  #              see docs/models.md; superseded by "topdown" below).
+  # "boxfill" -- person detector only, each box filled with a soft ellipse.
+  #              Fast path if "topdown" is too slow for a given scene.
+  # "topdown" -- (default) person detector -> crop each detection -> run
+  #              PP-HumanSeg on the crop. Holds a motionless subject and
+  #              works at room scale (3-8m). See docs/models.md for the
+  #              measured cost and why this beat every single-model option.
+  # "combo"   -- motion ∪ neural (the old "neural" backend, not topdown/boxfill).
+  kind: topdown
+  combine: max                # combo only: "max" | "min" | "mean" | "motion_gated"
+  # "nanodet" (default): true full-body COCO boxes, head-to-feet.
+  # "mediapipe": ~2x faster, but its raw box is NOT full-body -- confirmed
+  #   live, it tracks as a small square centered on the face/chest and cuts
+  #   the body off below. See detectors.py's MediaPipePersonDetector
+  #   docstring before switching to it.
+  detector_kind: nanodet
   motion:
     history: 300
     var_threshold: 16.0
@@ -47,6 +66,14 @@ segmenter:
     input_size: [256, 256]
     threshold: 0.5
     num_threads: 4
+  topdown:
+    max_crops: 2              # people beyond this fall back to ellipse fill
+    crop_padding: 0.15        # fractional padding around each box before segmenting
+
+# EMA smoothing over the 17x9 coverage grid, applied before shading. At 153
+# pixels a single flickering cell is highly visible; alpha=1.0 disables this.
+smoothing:
+  alpha: 0.6
 
 server:
   host: 0.0.0.0
