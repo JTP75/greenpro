@@ -5,12 +5,11 @@ Last updated 2026-09-13.
 ## Built
 
 Capture → segment → geometry/downscale → local preview → **network delivery
-to Will's simulator, now verified end-to-end** (see "Verified this session"
-below). `greenpro/{config,capture,geometry,segmenters,pipeline,server,
-patterns,sink}.py` and `run.py` are all written; the capture/segment/geometry
-half is still **not run against a live camera** (see "Not yet verified"), but
-the network half has been run for real, against the live `hazel-toad`
-instance, from this Windows dev machine with no camera and no Pi involved.
+to Will's simulator, verified end-to-end on real hardware** (see "Verified
+this session" below). `greenpro/{config,capture,geometry,segmenters,
+pipeline,server,patterns,sink}.py` and `run.py` are all written; the full
+chain — camera → 17×9 grid → live `hazel-toad` instance — was run together
+on the Pi (`pacel-rbp01`) on 2026-09-13.
 
 - `config.py` — dataclass config tree, YAML loading, live-patchable via
   `LiveConfig.apply_patch`. The 30 FPS display ceiling
@@ -90,33 +89,55 @@ bypass the segmenter/geometry chain) and watched
   correct against a running server (former item 6 below) — `PatternPipeline`
   exercises the exact same `LatestFrame`/`/frame.json` path as `Pipeline`.
 
+## Verified this session (integrated run, real camera + live simulator)
+
+Ran `python run.py --send --instance hazel-toad` on the Pi
+(`pacel-rbp01`) with the real camera — the two halves (video pipeline and
+network sender) running together for the first time as one process.
+Observed live via `/frame.json`, `/sink.json`, and the log:
+
+- **The integrated path works end-to-end.** Camera → nanodet →
+  PP-HumanSeg → geometry → EMA smoothing → 17×9 grid → POST
+  `https://sundai.willsarg.com/api/i/hazel-toad/frame`. Thousands of
+  frames sent over a sustained run; a person silhouette was visible in the
+  grid (`/frame.json`) and the sender logged HTTP 204s continuously.
+- **The three-thread split held as designed:** display at ~20fps while
+  inference ran at ~6.5fps (matches the `models.md` composed-cost estimate),
+  with the sender pacing at ~12fps.
+- **Found and fixed a real sender bug:** the `greenpro-sender` thread
+  *died* mid-run on an unhandled `TimeoutError` (a read timeout on
+  `urllib` — raised directly, not wrapped in `URLError`, so
+  `WebDisplaySink.send()`'s handlers missed it and the thread was killed
+  with "Exception in thread greenpro-sender"). The send counter froze at
+  1158 while the pipeline kept running. Fixed in `6fad051` by catching
+  `TimeoutError`/`OSError` in `send()` and converting them to `SinkError`
+  so `FrameSender`'s backoff path handles them — a transient network
+  failure must never kill the sender. Verified after redeploy: counter
+  advanced continuously, zero tracebacks.
+
 ## Not yet verified
 
-Everything below is about the capture/segment/geometry half specifically —
-still untouched this session; the Pi is held by another session and was not
-connected to. The network half's own open items moved to
-[simulator.md](simulator.md)'s "Open questions" (exact validation messages
-for other malformed bodies, whether `/frame` has its own rate limit, instance
-expiry, and the still-unexplained "error code: 1101" seen once in this run).
+The network half's open items live in [simulator.md](simulator.md)'s
+"Open questions" (exact validation messages for other malformed bodies,
+whether `/frame` has its own rate limit, instance expiry, and the
+still-unexplained "error code: 1101" seen once in the earlier run).
 
-1. Environment setup on the Pi (`apt install python3-opencv`, venv with
-   `--system-site-packages`, `pip install onnxruntime pyyaml`) has not been
-   run yet.
-2. No end-to-end run against a real camera yet. `python run.py --source
-   image:picam_snap.jpg` should be the first thing tried after syncing (the
-   full server/pipeline/config wiring is now confirmed working via
-   `pattern:` sources instead — see "Verified this session" above).
-3. Geometry defaults (`rotation: 90, fit: crop`) are a starting guess, not a
-   decision — needs a live sweep against `/raw.mjpg` once the camera is
-   physically mounted, to see how it's actually oriented.
-4. `MotionSegmenter` should work out of the box (pure OpenCV, no model). Not
-   yet run against a live feed to tune `var_threshold` / `min_blob_area`.
-5. `NeuralSegmenter` has **no model file yet** — `models/` is empty and
+1. Geometry defaults (`rotation: 90, fit: crop`) are still a starting
+   guess, not a decision — needs a live sweep against `/raw.mjpg` once the
+   camera is physically mounted, to see how it's actually oriented. (The
+   integrated run's silhouette was correctly upright, so the current
+   values are at least self-consistent.)
+2. `MotionSegmenter` should work out of the box (pure OpenCV, no model).
+   Not yet run against a live feed to tune `var_threshold` /
+   `min_blob_area`.
+3. `NeuralSegmenter` has **no model file yet** — `models/` is empty and
    gitignored. Need to source or convert a MediaPipe Selfie Segmentation
-   ONNX export (or fall back to a person-detector, per the contingency noted
-   in `segmenters.py`'s `NeuralSegmenter` docstring) before `segmenter: neural`
-   or `combo` can be exercised.
-6. Throughput at `combo` segmenter settings on the Pi 5 is unmeasured.
+   ONNX export (or fall back to a person-detector, per the contingency
+   noted in `segmenters.py`'s `NeuralSegmenter` docstring) before
+   `segmenter: neural` or `combo` can be exercised. (Not a blocker: the
+   default `topdown` backend uses the vendored nanodet + PP-HumanSeg
+   weights, which are git-tracked via LFS and present on the Pi.)
+4. Throughput at `combo` segmenter settings on the Pi 5 is unmeasured.
 
 ## Explicitly out of scope for this repo (so far)
 
