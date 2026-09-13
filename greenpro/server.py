@@ -9,9 +9,12 @@ Routes:
                row-major (row 0 first), the contract the future sender reads
   /config      GET current config as JSON; POST a partial JSON patch to apply live
 
-This module intentionally has no dependency on any particular delivery
-mechanism to the building -- see pipeline.Pipeline.latest_grid() for the
-hand-off point a future sender will poll or subscribe to.
+  /sink.json   greenpro.sink.FrameSender's stats (sent/failed/target/fps),
+               or {"enabled": false} if no sender is attached
+
+This module has no dependency on the specifics of network delivery --
+sender is an optional object satisfying `.stats.snapshot() -> dict` (see
+greenpro/sink.py's FrameSender), passed in from run.py.
 """
 
 from __future__ import annotations
@@ -99,12 +102,20 @@ INDEX_HTML = """<!doctype html>
   <div class="stats" id="stats">loading...</div>
   <script>
     async function poll() {{
+      let line = '';
       try {{
         const r = await fetch('/frame.json');
         const d = await r.json();
-        document.getElementById('stats').textContent =
-          `frame ${{d.frame_no}}  display_fps=${{d.fps}}  inference_fps=${{d.inference_fps}}`;
+        line = `frame ${{d.frame_no}}  display_fps=${{d.fps}}  inference_fps=${{d.inference_fps}}`;
       }} catch (e) {{}}
+      try {{
+        const sr = await fetch('/sink.json');
+        const s = await sr.json();
+        line += s.enabled
+          ? ` | sink: sent=${{s.sent}} failed=${{s.failed}} -> ${{s.target}}`
+          : ` | sink: disabled`;
+      }} catch (e) {{}}
+      document.getElementById('stats').textContent = line;
       setTimeout(poll, 1000);
     }}
     poll();
@@ -113,7 +124,7 @@ INDEX_HTML = """<!doctype html>
 """
 
 
-def make_handler(pipeline: Pipeline, live_config: LiveConfig):
+def make_handler(pipeline: Pipeline, live_config: LiveConfig, sender=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             log.debug("%s - %s", self.address_string(), fmt % args)
@@ -178,6 +189,8 @@ def make_handler(pipeline: Pipeline, live_config: LiveConfig):
                 self._stream_mjpeg(self.path.split("/")[1].split(".")[0])
             elif self.path == "/frame.json":
                 self._send_json(200, _frame_to_dict(pipeline.holder.get()))
+            elif self.path == "/sink.json":
+                self._send_json(200, sender.stats.snapshot() if sender else {"enabled": False})
             elif self.path == "/config":
                 self._send_json(200, live_config.get().to_dict())
             else:
@@ -202,9 +215,9 @@ def make_handler(pipeline: Pipeline, live_config: LiveConfig):
     return Handler
 
 
-def run_server(pipeline: Pipeline, live_config: LiveConfig) -> None:
+def run_server(pipeline: Pipeline, live_config: LiveConfig, sender=None) -> None:
     cfg = live_config.get()
-    handler = make_handler(pipeline, live_config)
+    handler = make_handler(pipeline, live_config, sender)
     httpd = ThreadingHTTPServer((cfg.server.host, cfg.server.port), handler)
     log.info("serving on http://%s:%d/", cfg.server.host, cfg.server.port)
     try:

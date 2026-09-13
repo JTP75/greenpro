@@ -50,7 +50,9 @@ greenpro/
     geometry.py        rotate/flip/fit/crop + the 17x9 area-average downscale
     segmenters.py      motion, neural, and combined human-figure segmenters
     pipeline.py        background worker thread tying the above together
-    server.py          local HTTP preview (MJPEG streams + /frame.json + live config)
+    patterns.py         synthetic 17x9 grids (--source pattern:<name>), no camera needed
+    sink.py              network delivery to Will's simulator (WebDisplaySink, FrameSender)
+    server.py          local HTTP preview (MJPEG streams + /frame.json + /sink.json + live config)
   docs/               current project state, setup notes, the frame protocol,
                        and what's known about Will's simulator/server
 ```
@@ -83,6 +85,20 @@ restarting:
 ```bash
 curl -X POST http://pacel-rbp01:8000/config -d '{"geometry": {"rotation": 180}}'
 ```
+
+## Sending frames to the simulator
+
+Verified working end-to-end (see [docs/status.md](docs/status.md)) — no
+camera needed, using a synthetic pattern instead of real capture:
+
+```bash
+python run.py --source pattern:blink --send --instance hazel-toad
+# watch it at https://sundai.willsarg.com/hazel-toad
+```
+
+`--send` can also be toggled live, along with every other `sink.*` setting,
+via `POST /config` — see [docs/simulator.md](docs/simulator.md) for the wire
+protocol and `greenpro/sink.py` for the sender.
 
 ## The 17×9 output contract
 

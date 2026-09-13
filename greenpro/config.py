@@ -194,6 +194,31 @@ class ServerConfig:
 
 
 @dataclass
+class SinkConfig:
+    # Network delivery to Will's Green Building simulator -- see
+    # docs/simulator.md for the wire protocol and greenpro/sink.py for the
+    # sender. Off by default: enabling requires an explicit `instance`.
+    enabled: bool = False
+    base_url: str = "https://sundai.willsarg.com/api"
+    instance: str = ""
+    fps: int = 15
+    timeout: float = 2.0
+    retry_backoff: float = 1.0
+
+    def clamp(self) -> None:
+        # Third independent enforcement of the 30 FPS display ceiling,
+        # alongside CaptureConfig.clamp() and pipeline.py's frame pacer --
+        # see MAX_DISPLAY_FPS.
+        self.fps = _clamp(int(self.fps), 1, MAX_DISPLAY_FPS)
+        self.timeout = max(0.1, float(self.timeout))
+        self.retry_backoff = max(0.1, float(self.retry_backoff))
+        self.instance = str(self.instance).strip()
+        if not self.instance:
+            # A misconfigured run can't fire requests at nothing.
+            self.enabled = False
+
+
+@dataclass
 class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
@@ -201,6 +226,7 @@ class Config:
     segmenter: SegmenterConfig = field(default_factory=SegmenterConfig)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    sink: SinkConfig = field(default_factory=SinkConfig)
 
     def clamp(self) -> None:
         self.capture.clamp()
@@ -209,6 +235,7 @@ class Config:
         self.segmenter.clamp()
         self.smoothing.clamp()
         self.server.clamp()
+        self.sink.clamp()
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)

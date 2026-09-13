@@ -14,6 +14,14 @@ JS bundle (`/assets/view-*.js`), and live probing of the endpoints below with
 not explicitly marked "confirmed by probing" as inferred and worth
 double-checking once real docs access is available.
 
+**Update, same day:** the network path was exercised end-to-end for real —
+`greenpro/sink.py`'s `FrameSender` streamed synthetic patterns
+(`greenpro/patterns.py`) to `hazel-toad` for an extended run (thousands of
+frames), including a deliberate bad-instance failure test and recovery. See
+`docs/status.md`'s "Verified this session" for the full results; the two
+concrete findings from that run (the User-Agent requirement and the
+`bad instance name` message) are folded into the sections below.
+
 ## Instances
 
 The site is organized around named "instances," each an independent
@@ -84,37 +92,78 @@ curl -X POST https://sundai.willsarg.com/api/i/hazel-toad/frame \
 Responses observed:
 
 - **Success**: `204 No Content`, empty body.
-- **Wrong shape**: `400 Bad Request`, JSON body `{"error": "expected 17 rows"}`
-  (and presumably analogous messages for wrong column count / malformed
-  triples — not individually confirmed).
+- **Wrong row count**: `400 Bad Request`, JSON body
+  `{"error": "expected 17 rows"}`.
+- **Unknown instance slug**: `400 Bad Request`, JSON body
+  `{"error": "bad instance name"}` — confirmed by the extended sender test in
+  `docs/status.md`; sending to a nonexistent slug does *not* 404, it 400s
+  with this message, and the server keeps accepting (and 400ing) every
+  subsequent frame rather than dropping the connection.
+- (Presumably an analogous message exists for wrong column count / malformed
+  triples — not individually confirmed.)
 - CORS is wide open (`Access-Control-Allow-Origin: *`), so this endpoint can
   be called directly from a browser too, not just server-side.
 - No auth header or token beyond the slug itself was required in testing.
+- **User-Agent matters.** The site sits behind Cloudflare, and a plain
+  `urllib.request` POST (default UA `Python-urllib/x.y`) gets rejected with
+  `403` before it ever reaches the app — Cloudflare's own error page, "error
+  code: 1010" (a blocked/known-automation UA signature), not the app's own
+  400 format above. `curl`'s and `requests`' default UAs both pass; the fix
+  for a bare-`urllib` client is to just set any ordinary-looking
+  `User-Agent` header. Confirmed by probing (this bit `greenpro/sink.py`'s
+  first version) and now worked around there permanently.
+- One transient `403` with body "error code: 1101" was also observed once
+  during an extended run, self-recovering on the very next attempt with no
+  code change. Cause unconfirmed — plausibly an unrelated transient
+  Cloudflare edge issue, not reproduced on demand. Not something a client
+  needs to special-case beyond "retry with backoff," which `FrameSender`
+  already does for every failure.
 
 ### Adapting this repo's grid to the expected body
 
 This repo's `(17, 9, 3)` `numpy.uint8` array from `Pipeline.latest_grid()`
-maps directly:
+(or `PatternPipeline.latest_grid()`, for the synthetic sources in
+`greenpro/patterns.py`) maps directly onto the expected body. The shipped
+implementation is `greenpro/sink.py`'s `WebDisplaySink` — stdlib
+`urllib.request`, not `requests` (see that file's module docstring for why),
+and note the explicit `User-Agent` header per the Cloudflare gotcha above:
 
 ```python
-import json
-import requests
+class WebDisplaySink:
+    def __init__(self, base_url: str, instance: str, timeout: float = 2.0):
+        self.base_url = base_url.rstrip("/")
+        self.instance = instance
+        self.timeout = timeout
 
-def send_grid(slug, grid):
-    """grid: (17, 9, 3) uint8 array, as returned by Pipeline.latest_grid()."""
-    body = [[[int(v) for v in cell] for cell in row] for row in grid.tolist()]
-    r = requests.post(
-        f"https://sundai.willsarg.com/api/i/{slug}/frame",
-        json=body,
-        timeout=2,
-    )
-    r.raise_for_status()  # raises on anything but 204
+    def send(self, grid) -> int:
+        """grid: (17, 9, 3) uint8. Returns the HTTP status (204) on success;
+        raises SinkError otherwise."""
+        body = json.dumps(grid.tolist()).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/i/{self.instance}/frame",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "greenpro-sender/0.1"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            resp.read()
+            return resp.status
+```
+
+`greenpro/sink.py`'s `FrameSender` wraps this in a background thread that
+pulls each new grid from a `LatestFrameHolder.wait_next()` and sends it,
+live-reconfigurable via this project's own `POST /config`, with capped
+exponential backoff on failure. Run it with:
+
+```bash
+python run.py --source pattern:blink --send --instance hazel-toad
 ```
 
 Same **30 FPS ceiling** applies here as to the real hardware (see the
-README's "Display rate limit" section) — this repo's pipeline already paces
-itself under that, so calling `send_grid` once per `latest_grid()` update is
-safe as-is; don't add a faster polling loop on top of it.
+README's "Display rate limit" section) — `FrameSender` paces its own sends
+independently (`sink.fps`, clamped to 30) on top of only ever sending once
+per new grid, so it can't outrun the source pipeline no matter how `sink.fps`
+is set.
 
 ### `gbsim` — the site's own Python client
 
@@ -161,9 +210,13 @@ frames flow once sent — and it's the same 17×9×3 wire layout in binary:
 ## Open questions / not yet confirmed
 
 - Exact validation messages for wrong column count or malformed `[r,g,b]`
-  entries (only "expected 17 rows" was actually triggered).
+  entries (only "expected 17 rows" and "bad instance name" were actually
+  triggered).
 - Whether `POST .../frame` has its own rate limit independent of the 30 FPS
-  hardware ceiling, and what happens if it's exceeded.
+  hardware ceiling, and what happens if it's exceeded — not hit even during
+  a sustained multi-minute run at ~8-10 req/s.
+- The one-off "error code: 1101" failure noted above — not reproduced on
+  demand, cause unconfirmed.
 - Contents of the password-gated `/docs` page — may formalize/supersede
   anything above. Worth revisiting if the event password becomes available.
 - Whether instances expire, and after how long.
