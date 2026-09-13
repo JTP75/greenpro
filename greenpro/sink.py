@@ -73,7 +73,20 @@ class WebDisplaySink:
             detail = exc.read().decode("utf-8", "replace")
             raise SinkError(exc.code, detail or exc.reason) from exc
         except urllib.error.URLError as exc:
+            # URLError wraps socket/OSError failures, but a raw read timeout
+            # on urlopen raises TimeoutError (== socket.timeout on 3.10+)
+            # *directly*, not wrapped in URLError -- so it must be caught
+            # here too, or it escapes send() and kills the sender thread
+            # ("Exception in thread greenpro-sender"). Seen live on the Pi.
             raise SinkError(None, str(exc.reason)) from exc
+        except TimeoutError as exc:
+            raise SinkError(None, f"timeout after {self.timeout}s: {exc}") from exc
+        except OSError as exc:
+            # Last-resort net for any other socket-level error (e.g. a
+            # ConnectionResetError that didn't arrive wrapped in URLError).
+            # A sender thread must never die from a transient network
+            # failure -- backoff handles recovery, not thread death.
+            raise SinkError(None, str(exc)) from exc
 
 
 class SinkStats:
