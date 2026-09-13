@@ -24,7 +24,7 @@ geometry:
   zoom: 1.0
 
 shading:
-  fg_color: [255, 255, 255] # human figure
+  fg_color: [0, 150, 0]     # human figure -- mid-brightness green, not blinding white
   bg_color: [0, 0, 0]       # background
   shading: linear           # "linear" | "threshold" | "gamma"
   gamma: 1.0

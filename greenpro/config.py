@@ -67,7 +67,7 @@ class GeometryConfig:
 
 @dataclass
 class ShadingConfig:
-    fg_color: tuple[int, int, int] = (255, 255, 255)
+    fg_color: tuple[int, int, int] = (0, 150, 0)
     bg_color: tuple[int, int, int] = (0, 0, 0)
     shading: str = "linear"     # "linear" | "threshold" | "gamma"
     gamma: float = 1.0
