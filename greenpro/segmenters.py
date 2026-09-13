@@ -256,6 +256,21 @@ class TopDownSegmenter(Segmenter):
             region = mask[scaled_box.y : scaled_box.y + scaled_box.h, scaled_box.x : scaled_box.x + scaled_box.w]
             np.maximum(region, resized, out=region)
 
+            # PP-HumanSeg is trained on webcam/teleconferencing footage
+            # (chest-up framing) -- confirmed live: even given a correct
+            # full-body detector box, it under-segments legs, cutting the
+            # mask off around the torso. floor_fill blends in a dim "guess"
+            # ellipse over the *original* (unpadded) detector box so a
+            # low-confidence region still reads as part of the person
+            # instead of vanishing -- see TopDownConfig.floor_fill.
+            if self._cfg.floor_fill > 0:
+                orig_scaled = Box(
+                    int(box.x * scale_x), int(box.y * scale_y),
+                    int(box.w * scale_x), int(box.h * scale_y), box.score,
+                ).clipped(w, h)
+                if orig_scaled.w > 0 and orig_scaled.h > 0:
+                    _draw_soft_ellipse(mask, orig_scaled, amplitude=self._cfg.floor_fill)
+
         for box in overflow:
             scaled = Box(
                 int(box.x * scale_x), int(box.y * scale_y),
