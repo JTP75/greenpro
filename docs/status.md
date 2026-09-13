@@ -57,7 +57,11 @@ Everything in the plan's "Verification" section is still open:
 
 - **Network delivery to Will's Green Building simulator/server.** The hand-off
   point (`Pipeline.latest_grid()` / `GET /frame.json`) is built and documented
-  in [protocol.md](protocol.md), but nothing sends frames anywhere yet.
+  in [protocol.md](protocol.md), but nothing sends frames anywhere yet. The
+  simulator's own wire protocol (`POST /api/i/<slug>/frame`, JSON shape) is
+  now reverse-engineered and documented in [simulator.md](simulator.md) —
+  writing the adapter is now just wiring `latest_grid()` output into the
+  `send_grid()` example there.
 - **Physical camera mounting.** Whether the camera is actually rotated 90°
   on its mount, and which way, is a physical decision that determines the
   right `geometry.rotation`/`hflip`/`vflip` values — needs to happen with the
